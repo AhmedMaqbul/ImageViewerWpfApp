@@ -115,7 +115,8 @@ namespace ImageViewerLogic.ViewModel
 
             if (Directory.Exists(folderPath) == false)
             {
-                throw new Exception("Folder does not exist :" + folderPath);
+                MessageBox.Show("Folder does not exist.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                throw new Exception("Folder does not exist" + folderPath);
             }
 
             string[] allFiles = Directory.GetFiles(folderPath);

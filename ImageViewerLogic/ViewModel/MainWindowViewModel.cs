@@ -1,8 +1,4 @@
-﻿using DocumentFormat.OpenXml.Drawing;
-using DocumentFormat.OpenXml.Drawing.Charts;
-using Google.Protobuf;
-using Google.Protobuf.WellKnownTypes;
-using ImageViewerLogic.Commands;
+﻿using ImageViewerLogic.Commands;
 using ImageViewerLogic.Model;
 using System;
 using System.Collections.Generic;
@@ -10,31 +6,37 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
-using System.Numerics;
-using System.Text;
-using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Forms;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
-using static System.Net.WebRequestMethods;
+using Xamarin.Forms.Xaml;
+using MessageBox = System.Windows.MessageBox;
 using Path = System.IO.Path;
+using Point = System.Windows.Point;
 
 namespace ImageViewerLogic.ViewModel
 {
     public class MainWindowViewModel : INotifyPropertyChanged
     {
-        public MainWindowViewModel()
-        {
-            BrowseCommand = new BaseCommand(BrowseFolderCommand, CanBrowseCommand);
-            NextImageCommand = new BaseCommand(NavigateNextImageCommand, CanNavigateNextImageCommand);
-            PreviousImageCommand = new BaseCommand(NavigatePreviousImageCommand, CanNavigatePreviousImageCommand);
+        public const double MaxZoomLevel = 200.0;
 
-            ImageFileExtensions = InitializeImageFileExtensionHashSet();
-        }
+        public const double MinZoomLevel = 100.0;
 
-        public ObservableCollection<ImageData> Images { get; set; } = new ObservableCollection<ImageData>();
+        public const double ZoomIncrementOrDecrement = 5.0;
+
+        private double _zoomLevel = 100.0;
 
         private string _selectedFolderPath = string.Empty;
+
+        private ImageData _selectedImage = new ImageData();
+
+        private PageData _selectedPage = new PageData();
+
+        private Point _mousePosition = new Point(0, 0);
+
+        private HashSet<string> ImageFileExtensions { get; }
+
         public string SelectedFolderPath
         {
             get => _selectedFolderPath;
@@ -45,34 +47,100 @@ namespace ImageViewerLogic.ViewModel
             }
         }
 
-        private ImageData _selectedImage;
+        public double ZoomLevel
+        {
+            get => _zoomLevel;
+            set
+            {
+                if (value < MinZoomLevel)
+                {
+                    _zoomLevel = MinZoomLevel;
+                }
+                else if (value > MaxZoomLevel)
+                {
+                    _zoomLevel = MaxZoomLevel;
+                }
+                else
+                {
+                    _zoomLevel = value;
+                }
+                OnPropertyChanged(nameof(ZoomLevel));
+            }
+        }
+
         public ImageData SelectedImage
         {
             get => _selectedImage;
             set
             {
+                if (_selectedImage == value)
+                    return;
+
                 _selectedImage = value;
+                ZoomLevelResetCommand();
                 OnPropertyChanged(nameof(SelectedImage));
             }
         }
 
-        private BitmapImage _selectedImageBitmap;
-        public BitmapImage SelectedImageBitmap
+        public PageData SelectedPage
         {
-            get => _selectedImageBitmap;
+            get => _selectedPage;
             set
             {
-                _selectedImageBitmap = value;
+                _selectedPage = value;
+                ZoomLevelResetCommand();
+                SelectedImage = GetImage(_selectedPage.DocumentName);
+                OnPropertyChanged(nameof(SelectedPage));
             }
         }
-        private HashSet<string> ImageFileExtensions
+
+        public Point MousePosition
         {
-            get;
+            get => _mousePosition;
+            set => _mousePosition = value;
+        }
+
+        public ObservableCollection<ImageData> Images { get; set; } = new ObservableCollection<ImageData>();
+
+        public MainWindowViewModel()
+        {
+            BrowseCommand = new BaseCommand(BrowseFolderCommand, CanBrowseCommand);
+            NextImageCommand = new BaseCommand(NavigateNextImageCommand, CanNavigateNextImageCommand);
+            PreviousImageCommand = new BaseCommand(NavigatePreviousImageCommand, CanNavigatePreviousImageCommand);
+
+            SelectedItemCommand = new BaseCommand(SetSelectedItemCommand, CanSelectedItemCommand);
+            PreviousPageCommand = new BaseCommand(NavigatePreviousPageCommand, CanNavigatePreviousPageCommand);
+            NextPageCommand = new BaseCommand(NavigateNextPageCommand, CanNavigateNextPageCommand);
+            FirstPageCommand = new BaseCommand(NavigateFirstPageCommand, CanNavigateFirstPageCommand);
+            LastPageCommand = new BaseCommand(NavigateLastPageCommand, CanNavigateLastPageCommand);
+
+            ZoomInCommand = new BaseCommand(ZoomInExecuteCommand, CanZoomInCommand);
+            ZoomOutCommand = new BaseCommand(ZoomOutExecuteCommand, CanZoomOutCommand);
+            ResetCommand = new BaseCommand(ZoomLevelResetCommand, CanZoomLevelResetCommand);
+
+            ImageFileExtensions = InitializeImageFileExtensionHashSet();
         }
 
         public ICommand BrowseCommand { get; set; }
         public ICommand NextImageCommand { get; set; }
         public ICommand PreviousImageCommand { get; set; }
+        public ICommand ZoomInCommand { get; set; }
+        public ICommand ZoomOutCommand { get; set; }
+        public ICommand ResetCommand { get; set; }
+        public ICommand SelectedItemCommand { get; set; }
+        public ICommand PreviousPageCommand { get; set; }
+        public ICommand NextPageCommand { get; set; }
+        public ICommand FirstPageCommand { get; set; }
+        public ICommand LastPageCommand { get; set; }
+
+        public void SetSelectedFolderPath(string folderPath)
+        {
+            SelectedFolderPath = folderPath;
+            PrepareImageCollection(folderPath);
+            PageFrameSetUpForEmptyImages();
+            MessageBoxServices(folderPath);
+            SetFirstImageSelected();
+        }
 
         public HashSet<string> InitializeImageFileExtensionHashSet()
         {
@@ -84,17 +152,20 @@ namespace ImageViewerLogic.ViewModel
             fileExtensions.Add(".bmp");
             fileExtensions.Add(".tiff");
             fileExtensions.Add(".tif");
-            fileExtensions.Add(".jfif"); 
+            fileExtensions.Add(".jfif");
 
             return fileExtensions;
         }
 
-
-        public void SetSelectedFolderPath(string folderPath)
+        public ImageData GetImage(string documentName)
         {
-            SelectedFolderPath = folderPath;
-            PrepareImageCollection(folderPath);
-            SetFirstImageSelected();
+            foreach (var image in Images)
+            {
+                if (image.Name == documentName)
+                    return image;
+            }
+
+            return null;
         }
 
         public bool IsImageFile(string extension)
@@ -103,7 +174,6 @@ namespace ImageViewerLogic.ViewModel
                 return true;
             return false;
         }
-
 
         //getting file list from folder
         //iterate files
@@ -115,7 +185,6 @@ namespace ImageViewerLogic.ViewModel
 
             if (Directory.Exists(folderPath) == false)
             {
-                MessageBox.Show("Folder does not exist.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 throw new Exception("Folder does not exist" + folderPath);
             }
 
@@ -125,22 +194,77 @@ namespace ImageViewerLogic.ViewModel
             foreach (var filePath in allFiles)
             {
                 string extension = Path.GetExtension(filePath).ToLower();
+
                 if (IsImageFile(extension))
                 {
-                    Images.Add(new ImageData { ImageName = Path.GetFileName(filePath), ImagePath = filePath });
+                    ImageData imageDatas = LoadImageInfo(filePath);
+                    Images.Add(imageDatas);
                 }
             }
+        }
 
+        public void PageFrameSetUpForEmptyImages()
+        {
             if (Images.Count == 0)
-                MessageBox.Show("Folder does not contain any image file.", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            {
+                SelectedPage.Frame = null;
+                OnPropertyChanged(nameof(SelectedPage));
+            }
+        }
+
+        public void MessageBoxServices(string folderPath)
+        {
+            if (Directory.Exists(folderPath) == false)
+            {
+                MessageBox.Show("Folder does not exist.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            else if (Images.Count == 0)
+            {
+                MessageBox.Show("Folder does not contain any image file.", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
             else
-                MessageBox.Show($"Folder contains {Images.Count} image file(s).", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            {
+                MessageBox.Show($"Folder contains {Images.Count} image file(s).", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
 
         public void SetFirstImageSelected()
         {
             SelectedImage = Images.FirstOrDefault();
         }
+
+        public ImageData LoadImageInfo(string imagePath)
+        {
+            ImageData imageData = new ImageData();
+            imageData.Path = imagePath;
+            imageData.Name = Path.GetFileName(imagePath);
+
+            var bitmapDecoder = BitmapDecoder.Create(new Uri(imagePath), BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+            var noOfPages = bitmapDecoder.Frames.Count;
+
+            for (int pageNumber = 0; pageNumber < noOfPages; pageNumber++)
+            {
+                PageData page = new PageData
+                {
+                    PageName = $"Page {pageNumber + 1}",
+                    DocumentName = imageData.Name,
+                    Index = pageNumber,
+                    Frame = bitmapDecoder.Frames[pageNumber]
+                };
+
+                imageData.Pages.Add(page);
+            }
+
+            return imageData;
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
+        protected virtual void OnPropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
 
         #region Commands
         public bool CanBrowseCommand(Object parameter = null)
@@ -152,19 +276,19 @@ namespace ImageViewerLogic.ViewModel
             FolderBrowserDialog folderBrowserDialog = new FolderBrowserDialog();
 
             if (folderBrowserDialog.ShowDialog() == DialogResult.OK)
-            {
                 SetSelectedFolderPath(folderBrowserDialog.SelectedPath);
-            }
         }
 
         public bool CanNavigatePreviousImageCommand(Object parameter = null)
         {
             if (Images.Count > 1 && SelectedImage == Images[0] == false)
                 return true;
-            return false;
+            else
+                return false;
         }
         public void NavigatePreviousImageCommand(Object parameter = null)
         {
+            ZoomLevelResetCommand();
             var currentIndex = Images.IndexOf(SelectedImage);
             SelectedImage = Images[currentIndex - 1];
         }
@@ -173,20 +297,133 @@ namespace ImageViewerLogic.ViewModel
         {
             if (Images.Count > 1 && SelectedImage == Images[Images.Count - 1] == false)
                 return true;
-            return false;
+            else
+                return false;
         }
         public void NavigateNextImageCommand(Object parameter = null)
         {
+            ZoomLevelResetCommand();
             var currentIndex = Images.IndexOf(SelectedImage);
             SelectedImage = Images[currentIndex + 1];
         }
-        #endregion 
 
-
-        public event PropertyChangedEventHandler PropertyChanged;
-        protected virtual void OnPropertyChanged(string propertyName)
+        public bool CanNavigatePreviousPageCommand(Object parameter)
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            if (parameter is ImageData imageData)
+            {
+                if (imageData.Pages.Count > 1 && _selectedPage == imageData.Pages[0] == false)
+                    return true;
+            }
+
+            return false;
         }
+        public void NavigatePreviousPageCommand(Object parameter)
+        {
+            ZoomLevelResetCommand();
+            var currentIndexOfPage = SelectedPage.Index;
+            SelectedPage = SelectedImage.Pages[currentIndexOfPage - 1];
+        }
+
+        public bool CanNavigateNextPageCommand(Object parameter)
+        {
+            if (parameter is ImageData imageData)
+            {
+                if (imageData.Pages.Count > 1 && _selectedPage == imageData.Pages[imageData.Pages.Count - 1] == false)
+                    return true;
+            }
+
+            return false;
+        }
+        public void NavigateNextPageCommand(Object parameter)
+        {
+            ZoomLevelResetCommand();
+            var currentIndexOfPage = SelectedPage.Index;
+            SelectedPage = SelectedImage.Pages[currentIndexOfPage + 1];
+        }
+
+        public bool CanNavigateFirstPageCommand(object parameter)
+        {
+            if (parameter is ImageData imageData)
+            {
+                if (imageData.Pages.Count > 1 && _selectedPage == imageData.Pages[0] == false)
+                    return true;
+            }
+
+            return false;
+        }
+        public void NavigateFirstPageCommand(object parameter)
+        {
+            ZoomLevelResetCommand();
+            SelectedPage = SelectedImage.Pages[0];
+        }
+
+        public bool CanNavigateLastPageCommand(object parameter)
+        {
+            if (parameter is ImageData imageData)
+            {
+                if (imageData.Pages.Count > 1 && _selectedPage == imageData.Pages[imageData.Pages.Count - 1] == false)
+                    return true;
+            }
+
+            return false;
+        }
+        public void NavigateLastPageCommand(object parameter)
+        {
+            ZoomLevelResetCommand();
+            SelectedPage = SelectedImage.Pages[SelectedImage.Pages.Count - 1];
+        }
+
+        public bool CanZoomInCommand(object parameter = null)
+        {
+            if (ZoomLevel >= MinZoomLevel && ZoomLevel < MaxZoomLevel && Images.Count > 0)
+                return true;
+            else
+                return false;
+        }
+        public void ZoomInExecuteCommand(Object parameter = null)
+        {
+            ZoomLevel += ZoomIncrementOrDecrement;
+        }
+
+        public bool CanZoomOutCommand(object parameter = null)
+        {
+            if (ZoomLevel > MinZoomLevel && Images.Count > 0)
+                return true;
+            else
+                return false;
+        }
+        public void ZoomOutExecuteCommand(Object parameter = null)
+        {
+            ZoomLevel -= ZoomIncrementOrDecrement;
+        }
+
+        public bool CanZoomLevelResetCommand(Object parameter = null)
+        {
+            if (ZoomLevel > MinZoomLevel && Images.Count > 0)
+                return true;
+            else
+                return false;
+        }
+        public void ZoomLevelResetCommand(Object parameter = null)
+        {
+            ZoomLevel = MinZoomLevel;
+        }
+
+        public bool CanSelectedItemCommand(object parameter)
+        {
+            return true;
+        }
+        public void SetSelectedItemCommand(object parameter)
+        {
+            if (parameter is PageData page)
+            {
+                SelectedPage = page;
+            }
+            else if (parameter is ImageData imageData)
+            {
+                SelectedPage = imageData.Pages.FirstOrDefault();
+            }
+        }
+        #endregion
     }
 }
